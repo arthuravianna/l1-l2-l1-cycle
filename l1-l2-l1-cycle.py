@@ -57,6 +57,11 @@ def str2hex(str):
     """
     return "0x" + str.encode("utf-8").hex()
 
+def post(endpoint, msg):
+    payload_hex = str2hex(msg)
+    response = request.post(rollup_server + endpoint, json={"payload": payload_hex})
+    logger.info(f"Received {endpoint} response status {response.status_code}.")
+
 def process_deposit(payload):
     print("PROCESS DEPOSIT!")
     binary_payload = bytes.fromhex(payload[2:])
@@ -141,6 +146,20 @@ def decode_erc721_deposit(binary_payload):
          raise Exception("Error parsing ERC721 deposit.")
 
 
+def process_withdraw(msg_sender, payload):
+    payload_json = json.loads(payload)
+    withdraw_data = {
+    }
+
+    if msg_sender not in accounts:
+        raise Exception(f"{msg_sender} does not have a Wallet.")
+
+    account.withdraw(withdraw_data)
+
+    notice = {"type": "withdraw", "token": payload_json["token"], "token_addr": payload_json["token_addr"]}
+
+    return json.dumps(notice)
+
 def handle_advance(data):
     logger.info(f"Received advance request data {data}")
     msg_sender = data["metadata"]["msg_sender"]
@@ -151,26 +170,22 @@ def handle_advance(data):
         # input came from the Portal (deposit)
         if msg_sender == rollup_address:
             try:
-                notice_hex = str2hex(process_deposit(payload))
-                response = requests.post(rollup_server + "/notice", json={"payload": notice_hex})
-                logger.info(f"Received notice status {response.status_code}")
+                notice = process_deposit(payload)
+                post("/notice", notice)
             except Exception as error:
                 error_msg = f"Failed to process deposit '{payload}'. {error}"
-                print(error)
+                post("/report", error_msg)
                 status = "reject"
-        else: # withdraw (payload must execute the method from the contract developed to do the withdraw)
+        else: # withdraw (generates a voucher that transfer from the DApp to the user)
             try:
-                # str_payload = hex_to_str(payload)
-                # payload = json.loads(str_payload)
-                # process_withdraw(payload)
-                pass
+                notice = process_withdraw(msg_sender, payload)
+                post("/notice", notice)
             except Exception as error:
-                print(error)
-                error_msg = f"Failed to process command '{str_payload}'. {error}"
+                error_msg = f"Failed to process command '{payload}'. {error}"
+                post("/report", error_msg)
                 status = "reject"
     except Exception as error:
-        print(error)
-        response = requests.post(rollup_server + "/report", json={"payload": str(error)})
+        post("/report", str(error))
         status = "reject"
 
     return status
