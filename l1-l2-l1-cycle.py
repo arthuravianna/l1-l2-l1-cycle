@@ -63,7 +63,6 @@ def post(endpoint, msg):
     logger.info(f"Received {endpoint} response status {response.status_code}.")
 
 def process_deposit(payload):
-    print("PROCESS DEPOSIT!")
     binary_payload = bytes.fromhex(payload[2:])
 
     # look up the header to discover if it is a ERC20 or ERC721 deposit
@@ -147,16 +146,34 @@ def decode_erc721_deposit(binary_payload):
 
 
 def process_withdraw(msg_sender, payload):
-    payload_json = json.loads(payload)
-    withdraw_data = {
-    }
-
     if msg_sender not in accounts:
         raise Exception(f"{msg_sender} does not have a Wallet.")
 
+    withdraw_data = json.loads(payload)
+
+    account = accounts[msg_sender]
     account.withdraw(withdraw_data)
 
-    notice = {"type": "withdraw", "token": payload_json["token"], "token_addr": payload_json["token_addr"]}
+    notice = {
+        "type": "withdraw",
+        "token_addr": withdraw_data["token_addr"]
+    }
+
+    if "token_id" not in withdraw_data: # ERC20 Voucher
+        notice["token"] = "ERC20"
+        voucher_payload = TRANSFER_FUNCTION_SELECTOR + encode_abi(
+            ['address', 'uint256'],
+            [account, amount]
+        )
+    else: # ERC721 Voucher
+        notice["token"] = "ERC721"
+        voucher_payload = SAFE_TRANSFER_FROM_SELECTOR + encode_abi(
+            ['address', 'address', 'uint256'],
+            [rollup_address, sender, token_id]
+        )
+
+    voucher = {"address": withdraw_data["token_addr"], "payload": "0x" + voucher_payload.hex()}
+    post("/voucher", voucher)
 
     return json.dumps(notice)
 
