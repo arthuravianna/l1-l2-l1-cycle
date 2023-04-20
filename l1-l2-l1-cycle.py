@@ -11,7 +11,6 @@
 # specific language governing permissions and limitations under the License.
 
 from os import environ
-import traceback
 import logging
 import requests
 import json
@@ -57,9 +56,13 @@ def str2hex(str):
     """
     return "0x" + str.encode("utf-8").hex()
 
-def post(endpoint, msg):
-    payload_hex = str2hex(msg)
-    response = request.post(rollup_server + endpoint, json={"payload": payload_hex})
+def post(endpoint, payload=None, json=None):
+    if payload:
+        payload_hex = str2hex(payload)
+        json={"payload": payload_hex}
+    
+    response = requests.post(rollup_server + endpoint, json=json)
+
     logger.info(f"Received {endpoint} response status {response.status_code}.")
 
 def process_deposit(payload):
@@ -69,7 +72,7 @@ def process_deposit(payload):
     header = decode_abi(['bytes32'], binary_payload)[0]
 
     deposit_data = None
-    notice = {"type": "deposit", "token": None, "token_addr": None}
+    notice = {"operation": "deposit", "token": None, "token_addr": None}
     if header == ERC20_TRANSFER_HEADER:
         deposit_data = decode_erc20_deposit(binary_payload)
         notice["token"] = "ERC20"
@@ -149,13 +152,13 @@ def process_withdraw(msg_sender, payload):
     if msg_sender not in accounts:
         raise Exception(f"{msg_sender} does not have a Wallet.")
 
-    withdraw_data = json.loads(payload)
+    withdraw_data = json.loads(hex2str(payload))
 
     account = accounts[msg_sender]
     account.withdraw(withdraw_data)
 
     notice = {
-        "type": "withdraw",
+        "operation": "withdraw",
         "token_addr": withdraw_data["token_addr"]
     }
 
@@ -163,17 +166,18 @@ def process_withdraw(msg_sender, payload):
         notice["token"] = "ERC20"
         voucher_payload = TRANSFER_FUNCTION_SELECTOR + encode_abi(
             ['address', 'uint256'],
-            [account, amount]
+            [msg_sender, withdraw_data["amount"]]
         )
     else: # ERC721 Voucher
         notice["token"] = "ERC721"
         voucher_payload = SAFE_TRANSFER_FROM_SELECTOR + encode_abi(
             ['address', 'address', 'uint256'],
-            [rollup_address, sender, token_id]
+            [rollup_address, msg_sender, withdraw_data["token_id"]]
         )
 
     voucher = {"address": withdraw_data["token_addr"], "payload": "0x" + voucher_payload.hex()}
-    post("/voucher", voucher)
+    post("/voucher", json=voucher)
+
 
     return json.dumps(notice)
 
@@ -188,21 +192,21 @@ def handle_advance(data):
         if msg_sender == rollup_address:
             try:
                 notice = process_deposit(payload)
-                post("/notice", notice)
+                post("/notice", payload=notice)
             except Exception as error:
                 error_msg = f"Failed to process deposit '{payload}'. {error}"
-                post("/report", error_msg)
+                post("/report", payload=error_msg)
                 status = "reject"
         else: # withdraw (generates a voucher that transfer from the DApp to the user)
             try:
                 notice = process_withdraw(msg_sender, payload)
-                post("/notice", notice)
+                post("/notice", payload=notice)
             except Exception as error:
                 error_msg = f"Failed to process command '{payload}'. {error}"
-                post("/report", error_msg)
+                post("/report", payload=error_msg)
                 status = "reject"
     except Exception as error:
-        post("/report", str(error))
+        post("/report", payload=str(error))
         status = "reject"
 
     return status
@@ -218,9 +222,7 @@ def handle_inspect(data):
         payload = payload[:-1]  # remove the last ","
     payload += "}"
 
-    payload_hex = str2hex(payload)
-    response = requests.post(rollup_server + "/report", json={"payload": payload_hex})
-    logger.info(f"Received report status {response.status_code}")
+    post("/report", payload=payload)
     return "accept"
 
 handlers = {
